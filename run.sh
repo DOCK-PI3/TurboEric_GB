@@ -15,9 +15,16 @@ else
     echo "✅ Dependencias detectadas."
 fi
 
-# Iniciar el proxy de búsqueda (SearXNG) en segundo plano
+# Liberar el puerto 3001 si ya está en uso
+if lsof -ti:3001 &>/dev/null; then
+    echo "⚠️  Puerto 3001 ocupado, liberando..."
+    lsof -ti:3001 | xargs kill -9 2>/dev/null
+    sleep 1
+fi
+
+# Iniciar el proxy de búsqueda en segundo plano
 echo "🔍 Arrancando proxy de búsqueda en puerto 3001..."
-npx tsx server.ts &
+node_modules/.bin/tsx server.ts &
 PROXY_PID=$!
 
 # Capturar señal de salida para limpiar el proxy

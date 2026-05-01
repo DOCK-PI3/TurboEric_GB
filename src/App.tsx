@@ -36,7 +36,7 @@ export default function App() {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [skills, setSkills] = useState<Skill[]>(INITIAL_SKILLS);
-  const [activeModel, setActiveModel] = useState('llama3');
+  const [activeModel, setActiveModel] = useState('llama3.1:8b');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<'connected' | 'error' | 'checking'>('checking');
   
@@ -77,7 +77,9 @@ export default function App() {
       const models = await ollama.listModels();
       setAvailableModels(models);
       if (models.length > 0 && !models.includes(activeModel)) {
-        setActiveModel(models[0]);
+        // Pick first chat-capable model (skip embedding models)
+        const chatModel = models.find(m => !m.includes('embed')) ?? models[0];
+        setActiveModel(chatModel);
       }
     } else {
       setOllamaStatus('error');

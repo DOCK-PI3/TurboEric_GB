@@ -92,7 +92,7 @@ const TOOL_DEFINITIONS: Record<string, ToolDefinition> = {
 // Tool executor — called by OllamaService when the model invokes a tool
 // ---------------------------------------------------------------------------
 
-const SEARCH_PROXY_URL = '';
+const SEARCH_PROXY_URL = 'http://localhost:3001';
 
 export async function executeSkillTool(
   name: string,
