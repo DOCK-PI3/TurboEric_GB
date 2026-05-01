@@ -1,0 +1,6 @@
+{
+  "name": "TurboEric_GB",
+  "description": "Una aplicación avanzada de asistente de programación con avatar 3D y soporte para Ollama local y cloud.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
