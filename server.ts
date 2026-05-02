@@ -1,4 +1,6 @@
 import express from 'express';
+import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 
 const app = express();
 const PORT = 3001;
@@ -7,7 +9,85 @@ const PORT = 3001;
 app.use((_, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  if (_.method === 'OPTIONS') { res.sendStatus(204); return; }
   next();
+});
+app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// SQLite — Chat History
+// ---------------------------------------------------------------------------
+const db = new Database('./chat_history.db');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT 'Nueva conversación',
+    created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    images TEXT,
+    created_at TEXT NOT NULL
+  );
+`);
+
+// GET /api/conversations
+app.get('/api/conversations', (_, res) => {
+  const rows = db.prepare('SELECT * FROM conversations ORDER BY created_at DESC').all();
+  res.json(rows);
+});
+
+// POST /api/conversations
+app.post('/api/conversations', (_, res) => {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO conversations (id, title, created_at) VALUES (?, ?, ?)').run(id, 'Nueva conversación', now);
+  res.json({ id, title: 'Nueva conversación', created_at: now });
+});
+
+// PATCH /api/conversations/:id/title
+app.patch('/api/conversations/:id/title', (req, res) => {
+  const { title } = req.body as { title: string };
+  if (!title) { res.status(400).json({ error: 'title required' }); return; }
+  db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title.slice(0, 60), req.params.id);
+  res.json({ ok: true });
+});
+
+// DELETE /api/conversations/:id
+app.delete('/api/conversations/:id', (req, res) => {
+  db.prepare('DELETE FROM conversations WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// GET /api/conversations/:id/messages
+app.get('/api/conversations/:id/messages', (req, res) => {
+  const rows = db.prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC').all(req.params.id);
+  const parsed = rows.map((r: any) => ({
+    ...r,
+    images: r.images ? JSON.parse(r.images) : undefined,
+  }));
+  res.json(parsed);
+});
+
+// POST /api/conversations/:id/messages
+app.post('/api/conversations/:id/messages', (req, res) => {
+  const { role, content, images } = req.body as { role: string; content: string; images?: string[] };
+  if (!role || !content) { res.status(400).json({ error: 'role and content required' }); return; }
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO messages (id, conversation_id, role, content, images, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, req.params.id, role, content, images ? JSON.stringify(images) : null, now);
+  res.json({ id, ok: true });
+});
+
+// DELETE /api/conversations/:id/messages
+app.delete('/api/conversations/:id/messages', (req, res) => {
+  db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(req.params.id);
+  res.json({ ok: true });
 });
 
 interface SearchResult {

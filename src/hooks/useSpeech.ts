@@ -9,10 +9,13 @@ export function useSpeech() {
     // Cancel existing speech
     window.speechSynthesis.cancel();
 
-    // Clean text by removing markdown characters and symbols for cleaner speech
+    // Clean text for natural speech: remove code blocks, URLs, markdown, emojis and special symbols
     const cleanText = text
-      .replace(/[*_#\-()\[\]{}]/g, ' ') // Replace symbols with space
-      .replace(/\s+/g, ' ')             // Normalize spaces
+      .replace(/```[\s\S]*?```/g, ' código ')             // fenced code blocks
+      .replace(/`[^`]*`/g, ' código ')                    // inline code
+      .replace(/https?:\/\/\S+/g, '')                     // URLs
+      .replace(/[^\p{L}\p{N}\s.,;:!?¿¡]/gu, ' ')         // emojis, icons, symbols (keep letters/numbers/basic punctuation)
+      .replace(/\s+/g, ' ')                               // normalize spaces
       .trim();
 
     const utterance = new SpeechSynthesisUtterance(cleanText);

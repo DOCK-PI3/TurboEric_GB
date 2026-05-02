@@ -1,7 +1,8 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Settings, Shield, Cpu, Zap, Info, Layers, Folder } from 'lucide-react';
+import { Settings, Shield, Cpu, Zap, Info, Layers, Folder, Plus, Trash2, MessageSquare } from 'lucide-react';
 import { Skill } from '../lib/skills';
+import { Conversation } from '../App';
 
 interface SidebarProps {
   activeModel: string;
@@ -14,6 +15,11 @@ interface SidebarProps {
   onClearHistory: () => void;
   opMode: 'build' | 'plan' | 'talk';
   onOpModeChange: (mode: 'build' | 'plan' | 'talk') => void;
+  conversations: Conversation[];
+  activeConversationId: string | null;
+  onNewConversation: () => void;
+  onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
 }
 
 export default function Sidebar({ 
@@ -26,10 +32,15 @@ export default function Sidebar({
   onOpenSecurity,
   onClearHistory,
   opMode,
-  onOpModeChange
+  onOpModeChange,
+  conversations,
+  activeConversationId,
+  onNewConversation,
+  onSelectConversation,
+  onDeleteConversation,
 }: SidebarProps) {
   return (
-    <div className="w-80 h-full flex flex-col p-6 glass-panel space-y-8 z-10">
+    <div className="w-80 h-full flex flex-col p-6 glass-panel space-y-6 z-10 overflow-y-auto">
       <div className="flex items-center space-y-1 gap-3">
         <div className="w-10 h-10 bg-cyan-500/20 rounded-lg flex items-center justify-center border border-cyan-500/50 shadow-[0_0_15px_rgba(0,242,255,0.3)]">
           <Zap className="text-cyan-400" size={24} />
@@ -145,9 +156,51 @@ export default function Sidebar({
             </div>
           </div>
         </div>
+
+        {/* Conversation History */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between border-b border-cyan-500/20 pb-2">
+            <div className="flex items-center gap-2 text-xs font-mono text-cyan-500/70">
+              <MessageSquare size={14} />
+              <span>HISTORIAL</span>
+            </div>
+            <button
+              onClick={onNewConversation}
+              title="Nueva conversación"
+              className="flex items-center gap-1 text-[10px] bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded border border-cyan-500/20 transition-colors font-mono"
+            >
+              <Plus size={12} />
+              Nueva
+            </button>
+          </div>
+          <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+            {conversations.map(conv => (
+              <motion.div
+                key={conv.id}
+                layout
+                className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all text-xs ${
+                  conv.id === activeConversationId
+                    ? 'bg-cyan-500/10 border border-cyan-500/20 text-cyan-300'
+                    : 'text-zinc-500 hover:bg-zinc-800/50 hover:text-zinc-300 border border-transparent'
+                }`}
+                onClick={() => onSelectConversation(conv.id)}
+              >
+                <MessageSquare size={12} className="shrink-0 opacity-60" />
+                <span className="flex-1 truncate font-mono">{conv.title}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onDeleteConversation(conv.id); }}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-red-500/70 hover:text-red-400 shrink-0"
+                  title="Eliminar conversación"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        </div>
       </div>
 
-      <div className="pt-4 border-t border-zinc-800/50 space-y-3">
+      <div className="pt-4 border-t border-zinc-800/50 space-y-3 mt-auto">
         <button 
           onClick={onOpenSettings}
           className="w-full flex items-center gap-3 px-3 py-2 text-zinc-400 hover:text-cyan-400 hover:bg-cyan-500/5 rounded-lg transition-all text-sm group"

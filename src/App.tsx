@@ -15,24 +15,20 @@ import { INITIAL_SKILLS, Skill, getActiveTools, executeSkillTool } from './lib/s
 import { useSpeech } from './hooks/useSpeech';
 import { Zap, AlertTriangle } from 'lucide-react';
 
+const API = 'http://localhost:3001';
+
+export interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
 let ollama = new OllamaService();
 
 export default function App() {
-  const [messages, setMessages] = useState<OllamaMessage[]>(() => {
-    const saved = localStorage.getItem('turboeric_history');
-    return saved ? JSON.parse(saved) : [
-      { role: 'assistant', content: '¡Hola! Soy TurboEric_GB, tu asistente avanzado de programación. He cargado mis protocolos de skills y estoy listo para ayudarte a hackear el kernel o desarrollar tu próxima gran idea. ¿En qué trabajamos hoy?' }
-    ];
-  });
-
-  useEffect(() => {
-    localStorage.setItem('turboeric_history', JSON.stringify(messages));
-  }, [messages]);
-
-  const clearHistory = () => {
-    const defaultMsg: OllamaMessage[] = [{ role: 'assistant', content: 'Hola de nuevo. Sistema reiniciado. ¿En qué puedo ayudarte ahora?' }];
-    setMessages(defaultMsg);
-  };
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<OllamaMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [skills, setSkills] = useState<Skill[]>(INITIAL_SKILLS);
@@ -51,6 +47,93 @@ export default function App() {
     topP: 0.9,
     maxTokens: 4096
   });
+
+  const activeConvIdRef = useRef<string | null>(null);
+  useEffect(() => { activeConvIdRef.current = activeConversationId; }, [activeConversationId]);
+
+  // Load conversations on mount
+  useEffect(() => {
+    (async () => {
+      const res = await fetch(`${API}/api/conversations`);
+      const convs: Conversation[] = await res.json();
+      if (convs.length === 0) {
+        // Create first conversation
+        const r = await fetch(`${API}/api/conversations`, { method: 'POST' });
+        const conv: Conversation = await r.json();
+        setConversations([conv]);
+        setActiveConversationId(conv.id);
+        const welcome: OllamaMessage = { role: 'assistant', content: '¡Hola! Soy TurboEric_GB, tu asistente avanzado de programación. ¿En qué trabajamos hoy?' };
+        setMessages([welcome]);
+        await fetch(`${API}/api/conversations/${conv.id}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: welcome.role, content: welcome.content }),
+        });
+      } else {
+        setConversations(convs);
+        const first = convs[0];
+        setActiveConversationId(first.id);
+        const msgsRes = await fetch(`${API}/api/conversations/${first.id}/messages`);
+        const msgs: OllamaMessage[] = await msgsRes.json();
+        setMessages(msgs.length > 0 ? msgs : [{ role: 'assistant', content: '¡Hola! Soy TurboEric_GB, tu asistente avanzado de programación. ¿En qué trabajamos hoy?' }]);
+      }
+    })();
+  }, []);
+
+  const loadConversation = async (id: string) => {
+    setActiveConversationId(id);
+    const res = await fetch(`${API}/api/conversations/${id}/messages`);
+    const msgs: OllamaMessage[] = await res.json();
+    setMessages(msgs.length > 0 ? msgs : [{ role: 'assistant', content: '¡Hola! ¿En qué puedo ayudarte?' }]);
+  };
+
+  const createConversation = async () => {
+    const r = await fetch(`${API}/api/conversations`, { method: 'POST' });
+    const conv: Conversation = await r.json();
+    const welcome: OllamaMessage = { role: 'assistant', content: '¡Hola! Nueva sesión iniciada. ¿En qué trabajamos?' };
+    await fetch(`${API}/api/conversations/${conv.id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: welcome.role, content: welcome.content }),
+    });
+    setConversations(prev => [conv, ...prev]);
+    setActiveConversationId(conv.id);
+    setMessages([welcome]);
+  };
+
+  const deleteConversation = async (id: string) => {
+    await fetch(`${API}/api/conversations/${id}`, { method: 'DELETE' });
+    setConversations(prev => {
+      const updated = prev.filter(c => c.id !== id);
+      if (activeConversationId === id) {
+        if (updated.length > 0) {
+          loadConversation(updated[0].id);
+        } else {
+          createConversation();
+        }
+      }
+      return updated;
+    });
+  };
+
+  const clearHistory = async () => {
+    const id = activeConvIdRef.current;
+    if (!id) return;
+    await fetch(`${API}/api/conversations/${id}/messages`, { method: 'DELETE' });
+    const welcome: OllamaMessage = { role: 'assistant', content: 'Hola de nuevo. Sistema reiniciado. ¿En qué puedo ayudarte ahora?' };
+    await fetch(`${API}/api/conversations/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: welcome.role, content: welcome.content }),
+    });
+    await fetch(`${API}/api/conversations/${id}/title`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Nueva conversación' }),
+    });
+    setConversations(prev => prev.map(c => c.id === id ? { ...c, title: 'Nueva conversación' } : c));
+    setMessages([welcome]);
+  };
 
   const { speak, isSpeaking } = useSpeech();
 
@@ -89,8 +172,9 @@ export default function App() {
   const handleSendMessage = useCallback(async (content?: string, images?: string[]) => {
     const textToSend = content || inputValue;
     if (!textToSend.trim() && (!images || images.length === 0)) return;
-
     if (isLoading) return;
+
+    const currentConvId = activeConvIdRef.current;
 
     // Read current values via refs to avoid stale closure
     const currentSkills = skillsRef.current;
@@ -98,40 +182,26 @@ export default function App() {
     const currentModelConfig = modelConfigRef.current;
     const currentProjectPath = projectPathRef.current;
 
-    // Inject Context
     const activeSkills = currentSkills.filter(s => s.active).map(s => s.name);
 
-    let modeContext = '';
-    switch (currentOpMode) {
-      case 'talk':
-        modeContext = '[MODO_CHAT]: Eres un asistente amigable. No generes código a menos que sea necesario.';
-        break;
-      case 'plan':
-        modeContext = '[MODO_PLAN]: Analiza y planifica. No generes bloques de código extensos. Prioriza la arquitectura.';
-        break;
-      case 'build':
-        modeContext = '[MODO_BUILD]: Genera código de producción y soluciones técnicas directas.';
-        break;
+    // Build clean system prompt — sent as role:system, never stored in history
+    const modeMap = {
+      talk: 'Modo chat: responde de forma conversacional, sin generar código salvo que sea necesario.',
+      plan: 'Modo plan: analiza y planifica. Prioriza arquitectura, evita bloques de código extensos.',
+      build: 'Modo build: genera código de producción y soluciones técnicas directas.',
+    };
+    let systemContent = modeMap[currentOpMode];
+    if (currentProjectPath) systemContent += `\nCarpeta de proyecto: ${currentProjectPath}.`;
+    if (activeSkills.length > 0) systemContent += `\nSkills activas: ${activeSkills.join(', ')}.`;
+    if (currentProjectPath) {
+      systemContent += `\nSi el usuario pide guardar un archivo, genera un bloque con:\n\`\`\`bash\n# ACCIÓN: GUARDAR_ARCHIVO\n# RUTA: (ruta)\n# CONTENIDO:\n(codigo)\n\`\`\``;
     }
 
-    const systemContext = `[SISTEMA]: TurboEric_GB v1.0.
-[ENTORNO]: Directorio de trabajo vinculado: "${currentProjectPath || 'No definido (pide al usuario que use "MONTAR CARPETA" en el sidebar)'}".
-[HABILIDADES_ACTIVAS]: ${activeSkills.join(', ') || 'Básicas'}.
-[PODER_REAL]: Si el usuario ha montado una carpeta, puedes EDITAR ARCHIVOS REALES. Para hacerlo, genera un bloque con \# ACCIÓN: GUARDAR_ARCHIVO. El usuario verá un botón "Desplegar" que escribirá el archivo directamente en su disco.
-[FORMATO_ESCRITURA]:
-\`\`\`bash
-# ACCIÓN: GUARDAR_ARCHIVO
-# RUTA: (nombre del archivo)
-# CONTENIDO:
-(codigo)
-\`\`\`
-No dudes en pedir al usuario que monte su carpeta de proyecto para que puedas trabajar directamente sobre sus archivos .sh, .py, .js, etc.`;
-
-    const textWithContext = `${modeContext}\n${systemContext}\n\n${textToSend}`;
+    const systemMessage: OllamaMessage = { role: 'system', content: systemContent };
 
     const userMessage: OllamaMessage = { 
       role: 'user', 
-      content: textWithContext,
+      content: textToSend,
       images: images && images.length > 0 ? images : undefined
     };
 
@@ -139,8 +209,29 @@ No dudes en pedir al usuario que monte su carpeta de proyecto para que puedas tr
     setInputValue('');
     setIsLoading(true);
 
+    // Persist user message
+    if (currentConvId) {
+      await fetch(`${API}/api/conversations/${currentConvId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: userMessage.role, content: userMessage.content, images: userMessage.images }),
+      });
+
+      // Auto-title from first user message
+      const userMsgsCount = messages.filter(m => m.role === 'user').length;
+      if (userMsgsCount === 0) {
+        const title = textToSend.slice(0, 50).trim();
+        await fetch(`${API}/api/conversations/${currentConvId}/title`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        setConversations(prev => prev.map(c => c.id === currentConvId ? { ...c, title } : c));
+      }
+    }
+
     try {
-      const chatMessages = [...messages, userMessage];
+      const chatMessages = [systemMessage, ...messages, userMessage];
       let assistantResponse = '';
 
       setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
@@ -166,13 +257,22 @@ No dudes en pedir al usuario que monte su carpeta de proyecto para que puedas tr
         activeTools.length > 0 ? activeTools : undefined,
         activeTools.length > 0 ? executeSkillTool : undefined,
       );
+
+      // Persist assistant message
+      if (currentConvId && assistantResponse) {
+        await fetch(`${API}/api/conversations/${currentConvId}/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'assistant', content: assistantResponse }),
+        });
+      }
     } catch (error) {
       console.error(error);
       setMessages(prev => [...prev, { role: 'assistant', content: 'Lo siento, hubo un error al procesar tu solicitud. Asegúrate de que Ollama esté corriendo en la URL configurada y que CORS esté habilitado.' }]);
     } finally {
       setIsLoading(false);
     }
-  }, [inputValue, isLoading, messages, activeModel, projectPath]);
+  }, [inputValue, isLoading, messages, activeModel, activeConversationId]);
 
   const toggleSkill = (id: string) => {
     setSkills(prev => prev.map(s => s.id === id ? { ...s, active: !s.active } : s));
@@ -198,6 +298,11 @@ No dudes en pedir al usuario que monte su carpeta de proyecto para que puedas tr
         onClearHistory={clearHistory}
         opMode={opMode}
         onOpModeChange={setOpMode}
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onNewConversation={createConversation}
+        onSelectConversation={loadConversation}
+        onDeleteConversation={deleteConversation}
       />
 
       <main className="flex-1 flex flex-col relative">

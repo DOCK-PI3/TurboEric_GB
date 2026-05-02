@@ -34,7 +34,7 @@ export default function Chat({ messages, inputValue, onInputChange, onSendMessag
           setAttachments(prev => [...prev, { name: file.name, content: base64.split(',')[1], type: 'image' }]);
         };
         reader.readAsDataURL(file);
-      } else {
+      } else if (file.name.endsWith('.md')) {
         reader.onload = (ev) => {
           const text = ev.target?.result as string;
           setAttachments(prev => [...prev, { name: file.name, content: text, type: 'file' }]);
@@ -100,7 +100,7 @@ export default function Chat({ messages, inputValue, onInputChange, onSendMessag
       {/* Messages */}
       <div 
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-8 space-y-6 scroll-smooth"
+        className="flex-1 min-h-0 overflow-y-auto p-8 space-y-6 scroll-smooth"
       >
         <AnimatePresence initial={false}>
           {messages.length === 0 && (
@@ -290,6 +290,7 @@ export default function Chat({ messages, inputValue, onInputChange, onSendMessag
             ref={fileInputRef} 
             onChange={handleFileChange} 
             className="hidden" 
+            accept="image/*,.md"
             multiple 
           />
           <div className="absolute inset-0 bg-cyan-500/5 blur-xl group-focus-within:bg-cyan-500/15 transition-all" />
