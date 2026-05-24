@@ -138,7 +138,7 @@ export default function Sidebar({
                   const handle = await window.showDirectoryPicker();
                   onProjectPathChange(handle.name);
                   // Store the handle globally or in a ref in parent
-                  (window as any).projectDirectoryHandle = handle;
+                  window.projectDirectoryHandle = handle;
                 } catch (e) {
                   console.error('Permiso denegado o no soportado');
                 }

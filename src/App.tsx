@@ -40,6 +40,9 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
+  const [braveApiKey, setBraveApiKey] = useState(() => localStorage.getItem('braveApiKey') || '');
+  const [serperApiKey, setSerperApiKey] = useState(() => localStorage.getItem('serperApiKey') || '');
+  const [searchProvider, setSearchProvider] = useState(() => localStorage.getItem('searchProvider') || 'auto');
   const [projectPath, setProjectPath] = useState('');
   const [opMode, setOpMode] = useState<'build' | 'plan' | 'talk'>('build');
   const [modelConfig, setModelConfig] = useState({
@@ -50,6 +53,27 @@ export default function App() {
 
   const activeConvIdRef = useRef<string | null>(null);
   useEffect(() => { activeConvIdRef.current = activeConversationId; }, [activeConversationId]);
+
+  // Persistir API Keys en localStorage
+  useEffect(() => {
+    localStorage.setItem('braveApiKey', braveApiKey);
+  }, [braveApiKey]);
+  useEffect(() => {
+    localStorage.setItem('serperApiKey', serperApiKey);
+  }, [serperApiKey]);
+  useEffect(() => {
+    localStorage.setItem('searchProvider', searchProvider);
+  }, [searchProvider]);
+
+  // Refs to avoid stale closures without recreating callbacks
+  const messagesRef = useRef(messages);
+  const inputValueRef = useRef(inputValue);
+  const isLoadingRef = useRef(isLoading);
+  const activeModelRef = useRef(activeModel);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { inputValueRef.current = inputValue; }, [inputValue]);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
+  useEffect(() => { activeModelRef.current = activeModel; }, [activeModel]);
 
   // Load conversations on mount
   useEffect(() => {
@@ -103,17 +127,19 @@ export default function App() {
 
   const deleteConversation = async (id: string) => {
     await fetch(`${API}/api/conversations/${id}`, { method: 'DELETE' });
-    setConversations(prev => {
-      const updated = prev.filter(c => c.id !== id);
-      if (activeConversationId === id) {
-        if (updated.length > 0) {
-          loadConversation(updated[0].id);
-        } else {
-          createConversation();
-        }
+
+    // Compute next conversations list synchronously from current state
+    const updated = conversations.filter(c => c.id !== id);
+    setConversations(updated);
+
+    // Navigate after state update (not inside a setter — avoids side-effects-during-render)
+    if (activeConversationId === id) {
+      if (updated.length > 0) {
+        await loadConversation(updated[0].id);
+      } else {
+        await createConversation();
       }
-      return updated;
-    });
+    }
   };
 
   const clearHistory = async () => {
@@ -137,7 +163,7 @@ export default function App() {
 
   const { speak, isSpeaking } = useSpeech();
 
-  // Refs to avoid stale closures in handleSendMessage without re-creating the callback
+  // Stable refs to avoid stale closures in handleSendMessage without recreating the callback
   const skillsRef = useRef(skills);
   const opModeRef = useRef(opMode);
   const modelConfigRef = useRef(modelConfig);
@@ -170,17 +196,20 @@ export default function App() {
   };
 
   const handleSendMessage = useCallback(async (content?: string, images?: string[]) => {
-    const textToSend = content || inputValue;
-    if (!textToSend.trim() && (!images || images.length === 0)) return;
-    if (isLoading) return;
-
-    const currentConvId = activeConvIdRef.current;
-
-    // Read current values via refs to avoid stale closure
+    // Read current values via refs to avoid stale closure AND avoid recreating the callback
+    const currentInputValue = inputValueRef.current;
+    const currentIsLoading = isLoadingRef.current;
+    const currentMessages = messagesRef.current;
+    const currentModel = activeModelRef.current;
     const currentSkills = skillsRef.current;
     const currentOpMode = opModeRef.current;
     const currentModelConfig = modelConfigRef.current;
     const currentProjectPath = projectPathRef.current;
+    const currentConvId = activeConvIdRef.current;
+
+    const textToSend = content || currentInputValue;
+    if (!textToSend.trim() && (!images || images.length === 0)) return;
+    if (currentIsLoading) return;
 
     const activeSkills = currentSkills.filter(s => s.active).map(s => s.name);
 
@@ -192,7 +221,25 @@ export default function App() {
     };
     let systemContent = modeMap[currentOpMode];
     if (currentProjectPath) systemContent += `\nCarpeta de proyecto: ${currentProjectPath}.`;
-    if (activeSkills.length > 0) systemContent += `\nSkills activas: ${activeSkills.join(', ')}.`;
+
+    // ── Tool calling instructions ────────────────────────────────────────
+    const toolDescriptions: Record<string, string> = {
+      search_web: 'Busca información actualizada en internet (clima, noticias, datos en tiempo real, eventos, precios, cualquier cosa que haya cambiado después de tu entrenamiento).',
+      execute_terminal: 'Ejecuta comandos bash en el servidor (compilar, instalar, git, scripts).',
+      file_manager: 'Lee, escribe, lista y elimina archivos del proyecto.',
+      system_monitor: 'Obtiene información del sistema (CPU, memoria, plataforma).',
+      code_assistant: 'Analiza, genera y refactoriza código con acceso al proyecto.',
+      ollama_cloud: 'Gestiona conexiones a instancias de Ollama locales o remotas.',
+    };
+    const activeToolNames = currentSkills.filter(s => s.active && s.toolName).map(s => s.toolName!);
+    if (activeToolNames.length > 0) {
+      systemContent += `\n\n── HERRAMIENTAS DISPONIBLES (puedes invocarlas cuando sea necesario) ──`;
+      for (const tn of activeToolNames) {
+        const desc = toolDescriptions[tn] || tn;
+        systemContent += `\n- ${tn}: ${desc}`;
+      }
+      systemContent += `\n\n⚠️ IMPORTANTE: Si el usuario pregunta por información que no está en tu entrenamiento (clima actual/previsión, noticias de hoy, precios actuales, datos de internet, eventos recientes, etc.), DEBES usar search_web para obtenerla antes de responder. No digas que no puedes ayudar sin antes haber intentado usar search_web.`;
+    }
     if (currentProjectPath) {
       systemContent += `\nSi el usuario pide guardar un archivo, genera un bloque con:\n\`\`\`bash\n# ACCIÓN: GUARDAR_ARCHIVO\n# RUTA: (ruta)\n# CONTENIDO:\n(codigo)\n\`\`\``;
     }
@@ -218,7 +265,7 @@ export default function App() {
       });
 
       // Auto-title from first user message
-      const userMsgsCount = messages.filter(m => m.role === 'user').length;
+      const userMsgsCount = currentMessages.filter(m => m.role === 'user').length;
       if (userMsgsCount === 0) {
         const title = textToSend.slice(0, 50).trim();
         await fetch(`${API}/api/conversations/${currentConvId}/title`, {
@@ -231,7 +278,7 @@ export default function App() {
     }
 
     try {
-      const chatMessages = [systemMessage, ...messages, userMessage];
+      const chatMessages = [systemMessage, ...currentMessages, userMessage];
       let assistantResponse = '';
 
       setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
@@ -239,7 +286,7 @@ export default function App() {
       const activeTools = getActiveTools(currentSkills);
 
       await ollama.chat(
-        activeModel,
+        currentModel,
         chatMessages,
         (chunk) => {
           assistantResponse += chunk;
@@ -272,7 +319,8 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [inputValue, isLoading, messages, activeModel, activeConversationId]);
+  }, []);
+  // ⚡ Empty deps — all values read from refs to avoid recreating callback on every message/input change
 
   const toggleSkill = (id: string) => {
     setSkills(prev => prev.map(s => s.id === id ? { ...s, active: !s.active } : s));
@@ -314,9 +362,7 @@ export default function App() {
           onSpeak={speak}
           isLoading={isLoading}
           isSpeaking={isSpeaking}
-        />
-
-        <SettingsModal 
+        />          <SettingsModal 
           isOpen={isSettingsOpen} 
           onClose={() => setIsSettingsOpen(false)}
           ollamaUrl={ollamaUrl}
@@ -325,6 +371,12 @@ export default function App() {
           setConfig={setModelConfig}
           skills={skills}
           onToggleSkill={toggleSkill}
+          braveApiKey={braveApiKey}
+          onBraveApiKeyChange={setBraveApiKey}
+          serperApiKey={serperApiKey}
+          onSerperApiKeyChange={setSerperApiKey}
+          searchProvider={searchProvider}
+          onSearchProviderChange={setSearchProvider}
         />
 
         <SecurityModal 

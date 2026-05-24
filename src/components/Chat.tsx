@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Volume2, User, Bot, Sparkles, Terminal as TerminalIcon, Paperclip, X, Save, FileCode } from 'lucide-react';
+import { Send, Volume2, User, Bot, Sparkles, Terminal as TerminalIcon, Paperclip, X, Save } from 'lucide-react';
 import { OllamaMessage } from '../lib/ollama';
 
 interface ChatProps {
@@ -178,7 +178,7 @@ export default function Chat({ messages, inputValue, onInputChange, onSendMessag
                                 const fileName = path.split('/').pop() || 'script.sh';
                                 
                                 // Check if we have a mounted directory handle
-                                const directoryHandle = (window as any).projectDirectoryHandle;
+                                const directoryHandle = window.projectDirectoryHandle;
                                 
                                 if (directoryHandle) {
                                   try {

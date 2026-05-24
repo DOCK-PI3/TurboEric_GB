@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, Float, MeshDistortMaterial, MeshWobbleMaterial, Sparkles } from '@react-three/drei';
+import { OrbitControls, Float, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 
 function RobotHead() {

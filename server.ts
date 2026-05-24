@@ -98,8 +98,101 @@ interface SearchResult {
 }
 
 // ---------------------------------------------------------------------------
+// Serper.dev — Google Search API (2500 gratis/mes, sin tarjeta)
+// ---------------------------------------------------------------------------
+async function searchSerper(query: string, key: string, num: number): Promise<SearchResult[]> {
+  const response = await fetch('https://google.serper.dev/search', {
+    method: 'POST',
+    headers: {
+      'X-API-KEY': key,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ q: query }),
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Serper.dev HTTP ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const data = await response.json() as { organic?: { title: string; link: string; snippet: string }[] };
+
+  return (data.organic ?? [])
+    .slice(0, num)
+    .map(r => ({
+      title: r.title?.trim() ?? '',
+      url: r.link?.trim() ?? '',
+      snippet: r.snippet?.trim() ?? '',
+      engine: 'serper',
+    }))
+    .filter(r => r.title && r.url);
+}
+
+// ---------------------------------------------------------------------------
+// Brave Search API (requires API key — free tier: 2000 queries/mes)
+// ---------------------------------------------------------------------------
+async function searchBrave(query: string, key: string, num: number): Promise<SearchResult[]> {
+  const url = new URL('https://api.search.brave.com/res/v1/web/search');
+  url.searchParams.append('q', query);
+  url.searchParams.append('count', String(Math.min(num, 10)));
+
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'Accept-Encoding': 'gzip',
+      'X-Subscription-Token': key,
+    },
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Brave Search HTTP ${response.status}: ${body.slice(0, 200)}`);
+  }
+
+  const data = await response.json() as { web?: { results?: { title: string; url: string; description: string }[] } };
+
+  return (data.web?.results ?? [])
+    .slice(0, num)
+    .map(r => ({
+      title: r.title?.trim() ?? '',
+      url: r.url?.trim() ?? '',
+      snippet: r.description?.trim() ?? '',
+      engine: 'brave',
+    }))
+    .filter(r => r.title && r.url);
+}
+
+// ---------------------------------------------------------------------------
 // DuckDuckGo HTML scraper (no API key needed)
 // ---------------------------------------------------------------------------
+/**
+ * Parses un bloque individual de resultado de DuckDuckGo extrayendo
+ * título, URL y snippet de un mismo contenedor <div class="result">.
+ * Esto elimina la fragilidad de usar dos regex independientes que
+ * podían desincronizarse si había anuncios o resultados especiales.
+ */
+function parseResultBlock(block: string): SearchResult | null {
+  // Saltar anuncios (tienen clase result--ad)
+  if (/result--ad/.test(block)) return null;
+
+  const linkMatch = block.match(/<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+  if (!linkMatch) return null;
+
+  const url = linkMatch[1];
+  const title = linkMatch[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (!title || !url.startsWith('http')) return null;
+
+  // El snippet puede estar en <div>, <span> o <a> con clase result__snippet
+  const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(?:div|span|a)>/i);
+  const snippet = snippetMatch
+    ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+    : '';
+
+  return { title, url, snippet, engine: 'duckduckgo' };
+}
+
 async function searchDuckDuckGo(query: string, num: number): Promise<SearchResult[]> {
   const body = new URLSearchParams({ q: query, kl: 'es-es' });
   const response = await fetch('https://html.duckduckgo.com/html/', {
@@ -121,25 +214,17 @@ async function searchDuckDuckGo(query: string, num: number): Promise<SearchResul
   const html = await response.text();
   const results: SearchResult[] = [];
 
-  // Match each result link: class="result__a" href="URL">Title</a>
-  const linkRe = /class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-  // Match snippets: class="result__snippet">text</a>
-  const snippetRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|span)>/g;
+  // Dividir el HTML por cada bloque <div class="result..."> usando lookahead
+  // para preservar el opening tag en cada fragmento
+  const rawBlocks = html.split(/(?=<div[^>]+class="result[^"]*"[^>]*>)/g);
 
-  const snippets: string[] = [];
-  let sm: RegExpExecArray | null;
-  while ((sm = snippetRe.exec(html)) !== null) {
-    snippets.push(sm[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
-  }
+  for (const block of rawBlocks) {
+    if (results.length >= num) break;
+    // Saltar fragmentos que no son realmente bloques de resultado
+    if (!/class="result__a"/.test(block)) continue;
 
-  let lm: RegExpExecArray | null;
-  let idx = 0;
-  while ((lm = linkRe.exec(html)) !== null && results.length < num) {
-    const url = lm[1];
-    const title = lm[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-    if (!title || !url.startsWith('http')) { idx++; continue; }
-    results.push({ title, url, snippet: snippets[idx] ?? '', engine: 'duckduckgo' });
-    idx++;
+    const parsed = parseResultBlock(block);
+    if (parsed) results.push(parsed);
   }
 
   return results;
@@ -191,30 +276,102 @@ async function searchSearXNG(query: string, num: number): Promise<{ results: Sea
 }
 
 // ---------------------------------------------------------------------------
-// Combined search: DDG first, SearXNG as fallback
+// Combined search: Brave > Serper > DDG > SearXNG
 // ---------------------------------------------------------------------------
-async function search(query: string, num: number): Promise<{ results: SearchResult[]; source: string }> {
-  try {
-    const results = await searchDuckDuckGo(query, num);
-    if (results.length > 0) {
-      console.log(`[search] "${query}" → ${results.length} resultados de DuckDuckGo`);
-      return { results, source: 'duckduckgo' };
-    }
-    console.warn('[search] DuckDuckGo sin resultados, probando SearXNG...');
-  } catch (err) {
-    console.warn(`[search] DuckDuckGo falló: ${err}, probando SearXNG...`);
+async function search(
+  query: string,
+  num: number,
+  braveKey?: string,
+  serperKey?: string,
+  preferred?: string,
+): Promise<{ results: SearchResult[]; source: string }> {
+  // ── Build provider list based on preference ────────────────────────
+  type ProviderFn = () => Promise<{ results: SearchResult[]; source: string } | null>;
+
+  const providers: { name: string; fn: ProviderFn }[] = [];
+
+  // Helper to add a provider
+  const addBrave = () => providers.push({
+    name: 'brave',
+    fn: async () => {
+      if (!braveKey) return null;
+      const results = await searchBrave(query, braveKey, num);
+      return results.length > 0 ? { results, source: 'brave' } : null;
+    },
+  });
+
+  const addSerper = () => providers.push({
+    name: 'serper',
+    fn: async () => {
+      if (!serperKey) return null;
+      const results = await searchSerper(query, serperKey, num);
+      return results.length > 0 ? { results, source: 'serper' } : null;
+    },
+  });
+
+  const addDuckDuckGo = () => providers.push({
+    name: 'duckduckgo',
+    fn: async () => {
+      const results = await searchDuckDuckGo(query, num);
+      return results.length > 0 ? { results, source: 'duckduckgo' } : null;
+    },
+  });
+
+  const addSearXNG = () => providers.push({
+    name: 'searxng',
+    fn: async () => {
+      const result = await searchSearXNG(query, num);
+      return { results: result.results, source: result.source };
+    },
+  });
+
+  switch (preferred) {
+    case 'serper':
+      addSerper();
+      addBrave();
+      addDuckDuckGo();
+      addSearXNG();
+      break;
+    case 'duckduckgo':
+      addDuckDuckGo();
+      addSearXNG();
+      break;
+    default: // 'auto' | 'brave' | undefined
+      addBrave();
+      addSerper();
+      addDuckDuckGo();
+      addSearXNG();
+      break;
   }
-  return await searchSearXNG(query, num);
+
+  // ── Execute providers in order ─────────────────────────────────────
+  for (const provider of providers) {
+    try {
+      const result = await provider.fn();
+      if (result) {
+        console.log(`[search] "${query}" → ${result.results.length} resultados de ${provider.name}`);
+        return result;
+      }
+      console.warn(`[search] ${provider.name} sin resultados, probando siguiente...`);
+    } catch (err) {
+      console.warn(`[search] ${provider.name} falló: ${err}, probando siguiente...`);
+    }
+  }
+
+  throw new Error('Todos los motores de búsqueda fallaron.');
 }
 
 app.get('/api/search', async (req, res) => {
   const query = (req.query.q as string | undefined)?.trim();
   const num = Math.min(Math.max(parseInt((req.query.num as string) || '5', 10), 1), 10);
+  const braveKey = (req.query.brave_key as string | undefined)?.trim() || undefined;
+  const serperKey = (req.query.serper_key as string | undefined)?.trim() || undefined;
+  const preferred = (req.query.preferred as string | undefined)?.trim() || undefined;
 
   if (!query) { res.status(400).json({ error: 'Parámetro "q" requerido' }); return; }
 
   try {
-    const data = await search(query, num);
+    const data = await search(query, num, braveKey, serperKey, preferred);
     res.json({ query, ...data });
   } catch (error) {
     console.error('[search] Error:', error);
@@ -223,6 +380,201 @@ app.get('/api/search', async (req, res) => {
 });
 
 // Health check
+// ---------------------------------------------------------------------------
+// Terminal Execution — ejecuta comandos en el servidor
+// ---------------------------------------------------------------------------
+app.post('/api/exec', async (req, res) => {
+  const { command, timeout } = req.body as { command: string; timeout?: number };
+  if (!command) { res.status(400).json({ error: 'command required' }); return; }
+
+  const maxTimeout = Math.min(Math.max(timeout ?? 15, 1), 60) * 1000;
+
+  try {
+    const { exec } = await import('child_process');
+    exec(command, { timeout: maxTimeout, maxBuffer: 2 * 1024 * 1024 }, (err, stdout, stderr) => {
+      res.json({
+        stdout: String(stdout ?? ''),
+        stderr: String(stderr ?? ''),
+        error: err ? err.message : null,
+        code: err?.code ?? 0,
+        killed: err?.killed ?? false,
+      });
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// File System API — leer, escribir, listar, eliminar archivos
+// ---------------------------------------------------------------------------
+import { readFile, writeFile, readdir, mkdir, unlink, stat, access } from 'fs/promises';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = resolve(__dirname);
+
+// Utility: ensure path stays within project root
+function safeResolve(userPath: string): string {
+  const resolved = resolve(PROJECT_ROOT, userPath);
+  if (!resolved.startsWith(PROJECT_ROOT)) {
+    throw new Error('Acceso denegado: la ruta está fuera del proyecto.');
+  }
+  return resolved;
+}
+
+// GET /api/files/:path(*) — leer archivo o listar directorio
+app.get('/api/files/:path(*)', async (req, res) => {
+  try {
+    const fullPath = safeResolve(req.params.path);
+
+    try {
+      await access(fullPath);
+    } catch {
+      res.status(404).json({ error: 'Archivo o directorio no encontrado.' });
+      return;
+    }
+
+    const stats = await stat(fullPath);
+
+    if (stats.isDirectory()) {
+      const entries = await readdir(fullPath, { withFileTypes: true });
+      const children = entries.map(e => ({
+        name: e.name,
+        type: e.isDirectory() ? 'directory' : 'file',
+        size: e.isFile() ? undefined : undefined,
+      }));
+      res.json({ path: req.params.path, type: 'directory', children });
+    } else {
+      const content = await readFile(fullPath, 'utf-8');
+      res.json({ path: req.params.path, type: 'file', content, size: stats.size });
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('Acceso denegado')) {
+      res.status(403).json({ error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
+});
+
+// POST /api/files/:path(*) — crear/sobrescribir archivo
+app.post('/api/files/:path(*)', async (req, res) => {
+  try {
+    const { content } = req.body as { content?: string };
+    if (content === undefined || content === null) {
+      res.status(400).json({ error: 'Se requiere "content" en el body.' });
+      return;
+    }
+
+    const fullPath = safeResolve(req.params.path);
+    const dir = resolve(fullPath, '..');
+
+    // Create parent directory if it doesn't exist
+    await mkdir(dir, { recursive: true });
+
+    await writeFile(fullPath, content, 'utf-8');
+    res.json({ path: req.params.path, written: true, size: Buffer.byteLength(content, 'utf-8') });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('Acceso denegado')) {
+      res.status(403).json({ error: msg });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
+});
+
+// DELETE /api/files/:path(*) — eliminar archivo
+app.delete('/api/files/:path(*)', async (req, res) => {
+  try {
+    const fullPath = safeResolve(req.params.path);
+    await unlink(fullPath);
+    res.json({ path: req.params.path, deleted: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('Acceso denegado')) {
+      res.status(403).json({ error: msg });
+    } else if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      res.status(404).json({ error: 'Archivo no encontrado.' });
+    } else {
+      res.status(500).json({ error: msg });
+    }
+  }
+});
+
+// GET /api/ollama/models — lista modelos disponibles
+app.get('/api/ollama/models', async (_, res) => {
+  try {
+    const resp = await fetch('http://localhost:11434/api/tags');
+    if (!resp.ok) { res.status(502).json({ error: 'Ollama no responde' }); return; }
+    const data = await resp.json() as { models?: { name: string }[] };
+    res.json({ models: (data.models ?? []).map((m: { name: string }) => m.name) });
+  } catch (e) {
+    res.status(502).json({ error: String(e) });
+  }
+});
+
+// GET /api/search/test — prueba directa de búsqueda (debug)
+app.get('/api/search/test', async (req, res) => {
+  const query = (req.query.q as string | undefined)?.trim() || 'tiempo Las Palmas Gran Canaria';
+  const braveKey = (req.query.brave_key as string | undefined)?.trim() || undefined;
+  const serperKey = (req.query.serper_key as string | undefined)?.trim() || undefined;
+  const preferred = (req.query.preferred as string | undefined)?.trim() || undefined;
+  const num = Math.min(Math.max(parseInt((req.query.num as string) || '3', 10), 1), 5);
+
+  const results: Record<string, any> = {};
+
+  // Test each provider individually
+  if (serperKey) {
+    try {
+      const r = await searchSerper(query, serperKey, num);
+      results.serper = { success: true, count: r.length, results: r };
+    } catch (e) {
+      results.serper = { success: false, error: String(e) };
+    }
+  } else {
+    results.serper = { success: false, error: 'No se proporcionó API key' };
+  }
+
+  if (braveKey) {
+    try {
+      const r = await searchBrave(query, braveKey, num);
+      results.brave = { success: true, count: r.length, results: r };
+    } catch (e) {
+      results.brave = { success: false, error: String(e) };
+    }
+  } else {
+    results.brave = { success: false, error: 'No se proporcionó API key' };
+  }
+
+  // DDG always works without keys
+  try {
+    const r = await searchDuckDuckGo(query, num);
+    results.duckduckgo = { success: true, count: r.length, results: r };
+  } catch (e) {
+    results.duckduckgo = { success: false, error: String(e) };
+  }
+
+  // Full pipeline test
+  let fullPipeline: any = { success: false, error: 'No se pudo ejecutar' };
+  try {
+    const data = await search(query, num, braveKey, serperKey, preferred);
+    fullPipeline = { success: true, source: data.source, count: data.results.length, firstResult: data.results[0] || null };
+  } catch (e) {
+    fullPipeline = { success: false, error: String(e) };
+  }
+
+  res.json({
+    query,
+    preferred: preferred || 'auto',
+    individual: results,
+    full_pipeline: fullPipeline,
+  });
+});
+
 app.get('/api/health', (_, res) => {
   res.json({ status: 'ok', port: PORT });
 });

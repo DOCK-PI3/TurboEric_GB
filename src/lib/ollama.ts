@@ -136,8 +136,8 @@ export class OllamaService {
   ): Promise<string> {
     const workingMessages: OllamaMessage[] = [...messages];
 
-    // Max 5 tool-call rounds to prevent infinite loops
-    for (let round = 0; round < 5; round++) {
+    // Max 10 tool-call rounds — permite workflows multi-herramienta complejos
+    for (let round = 0; round < 10; round++) {
       const response = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -173,6 +173,6 @@ export class OllamaService {
       }
     }
 
-    throw new Error('Se superó el límite de llamadas a herramientas (5 rondas).');
+    throw new Error('Se superó el límite de llamadas a herramientas (10 rondas). El modelo puede estar en un bucle infinito.');
   }
 }
